@@ -3,13 +3,14 @@ import NonFungibleToken from 0x02
 
 pub contract YomiSwap {
 
-  pub event StakedNFT(id: UInt64, type: Type, staker:Address?)
+  pub event StakedNFT(id: UInt64, staker:Address?)
+  pub event SwapFTforNFT(id: UInt64, swapper:Address?)
 
 
   pub resource interface ITokenPool {
     pub let protocolFeeRatio: UFix64
     pub let royalityRatio: UFix64
-    pub fun buy(tokenId: UInt64, kind: Type, vault: @FungibleToken.Vault):@NonFungibleToken.NFT {           
+    pub fun swapFTforNFT(tokenId: UInt64, kind: Type, vault: @FungibleToken.Vault):@NonFungibleToken.NFT {           
       post {
         result.id == tokenId: "The Id of the withdrawn token must be the same as the requested Id"
         result.isInstance(kind): "The Type of the withdrawn token must be the same as the requested Type"
@@ -22,7 +23,7 @@ pub contract YomiSwap {
   pub resource TokenPool {
 
     //@param collection: capabilitiy of collection
-    priv let collection: Capability<&NonFungibleToken.Collection>
+    priv let poolNFTCapability: Capability<&NonFungibleToken.Collection>
 
     //@param currency: currency of owner's want
     priv let currency: Type
@@ -39,8 +40,11 @@ pub contract YomiSwap {
     //@param isStake of tokenId
     priv let tokenIdToApprove: {UInt64:Bool}
 
+    //@param
+    priv let poolFTProviderCapability: Capability<&{FungibleToken.Provider}>
+
     //@param ownerCapability: capability of token's owner
-    priv let ownerCapability: Capability<&{FungibleToken.Receiver}>
+    priv let poolFTReceiverCapability: Capability<&{FungibleToken.Receiver}>
 
     //@param protocolCapability: capability of protocol's owner
     priv let protocolCapabitiy: Capability<&{FungibleToken.Receiver}>
@@ -61,20 +65,22 @@ pub contract YomiSwap {
     pub let buyNum: UInt64
 
     init(
-      collection: Capability<&NonFungibleToken.Collection>,
       currency: Type,
       spotPrice: UFix64,
       delta: UFix64,
       divergence: UFix64,
-      ownerCapability: Capability<&{FungibleToken.Receiver}>,
+      poolNFTCapability: Capability<&NonFungibleToken.Collection>,
+      poolFTProviderCapability: Capability<&{FungibleToken.Provider}>,
+      poolFTReceiverCapability: Capability<&{FungibleToken.Receiver}>,
       protocolCapabitiy: Capability<&{FungibleToken.Receiver}>,
       royalityCapability: Capability<&{FungibleToken.Receiver}>,
       protocolFeeRatio: UFix64,
       royalityRatio: UFix64
       ){
-      self.collection = collection
+      self.poolNFTCapability = poolNFTCapability
       self.currency = currency
-      self.ownerCapability = ownerCapability
+      self.poolFTProviderCapability = poolFTProviderCapability
+      self.poolFTReceiverCapability = poolFTReceiverCapability
       self.protocolCapabitiy = protocolCapabitiy
       self.royalityCapability = royalityCapability
       self.protocolFeeRatio = protocolFeeRatio
@@ -90,38 +96,84 @@ pub contract YomiSwap {
 
 //main関数
     pub fun stakeNFT(tokenId: UInt64){
+      //ownerの確認
       pre {
-        self.collection.borrow()!.borrowNFT(id: tokenId) != nil:
+        self.poolNFTCapability.borrow()!.borrowNFT(id: tokenId) != nil:
           "Token does not exist in the owner's collection!"
       }
 
-      let token = self.collection.borrow()!.borrowNFT(id: tokenId)
+      //tokenを取得
+      let token = self.poolNFTCapability.borrow()!.borrowNFT(id: tokenId)
       let uuid = token.uuid
+
+      //stake状態を変更
       self.tokenIdToApprove[uuid] = true
 
-      emit StakedNFT(id: token.id, type: token.getType(), staker: self.owner?.address)
+      //event発行
+      emit StakedNFT(id: token.id, staker: self.owner?.address)
     }
 
-    pub fun stakeFT(initSellNum: UInt64) {}
-
-    pub fun buy(tokenId: UInt64, kind: Type, vault: @FungibleToken.Vault): @NonFungibleToken.NFT {
+    pub fun swapFTforNFT(tokenId: UInt64, vault: @FungibleToken.Vault): @NonFungibleToken.NFT {
+      //ownerの確認
       pre {
-        self.collection.borrow()!.borrowNFT(id: tokenId) != nil:"No token matching this Id in collection!"
-        vault.isInstance(self.currency): "Vault does not hold the require currency type"
+        self.poolNFTCapability.borrow()!.borrowNFT(id: tokenId) != nil:"No token matching this Id in collection!"
       }
-      let token = self.collection.borrow()!.borrowNFT(id: tokenId)
+
+      //tokenを取得
+      let token = self.poolNFTCapability.borrow()!.borrowNFT(id: tokenId)
       let uuid = token.uuid
 
-      self.ownerCapability.borrow()!.deposit(from: <-vault)
+      //FTを受け取る
+      self.poolFTReceiverCapability.borrow()!.deposit(from: <-vault)
 
-      return <-self.collection.borrow()!.withdraw(withdrawID: token.id)
+      //NFTを渡す
+      return <-self.poolNFTCapability.borrow()!.withdraw(withdrawID: token.id)
+
+      //event発行
+      //emit  SwapFTforNFT(id: token.id, swapper: self.owner?.address)
     }
 
-    pub fun sell(){}
+    pub fun swapNFTforFT(tokenId: UInt64, swapCapability: Capability<&NonFungibleToken.Collection>){
+      //ownerの確認
+      pre {
+        swapCapability.borrow()!.borrowNFT(id: tokenId) != nil:"No token matching this Id in collection!"
+      }
 
-    pub fun cancelStakeNFT(){}
+      //tokenを取得
+      let token <- swapCapability.borrow()!.withdraw(withdrawID: tokenId)
+      let uuid = token.uuid
 
-    pub fun cancelStakeFT(){}
+      //NFTを受け取る
+      self.poolNFTCapability.borrow()!.deposit(token: <- token)
+
+      //FTを渡す
+
+      //eventの発行
+    }
+
+    pub fun cancelStakeNFT(tokenId: UInt64){
+      //ownerの確認
+      pre {
+        self.poolNFTCapability.borrow()!.borrowNFT(id: tokenId) != nil:
+          "Token does not exist in the owner's collection!"
+      }
+
+      //tokenの取得
+      let token = self.poolNFTCapability.borrow()!.borrowNFT(id: tokenId)
+      let uuid = token.uuid
+
+      assert(self.tokenIdToApprove[uuid] != nil, message: "No token with this Id on sale!")
+
+      //状態変更
+      self.tokenIdToApprove.remove(key: uuid)
+      self.tokenIdToApprove[uuid] = nil
+
+      //event発行
+    }
+    
+    pub fun cancelStakeFT(tokenId: UInt64){
+      
+    }
 
 
 //getter関数
