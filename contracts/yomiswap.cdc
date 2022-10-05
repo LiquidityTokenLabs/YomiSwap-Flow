@@ -5,6 +5,7 @@ pub contract YomiSwap {
 
   pub event StakedNFT(id: UInt64, staker:Address?)
   pub event SwapFTforNFT(id: UInt64, swapper:Address?)
+  pub event SwapNFTforFT(id: UInt64, swappper:Address?)
 
 
   pub resource interface ITokenPool {
@@ -29,13 +30,13 @@ pub contract YomiSwap {
     priv let currency: Type
 
     //@param spotPrice: base price
-    priv let spotPrice: UFix64
+    priv var spotPrice: UFix64
 
     //@param delta: price difference
-    pub let delta: UFix64
+    pub var delta: UFix64
 
     //@param divergence: divergence of buy and sell
-    pub let divergence: UFix64
+    pub var divergence: UFix64
 
     //@param isStake of tokenId
     priv let tokenIdToApprove: {UInt64:Bool}
@@ -133,7 +134,7 @@ pub contract YomiSwap {
       //emit  SwapFTforNFT(id: token.id, swapper: self.owner?.address)
     }
 
-    pub fun swapNFTforFT(tokenId: UInt64, swapCapability: Capability<&NonFungibleToken.Collection>){
+    pub fun swapNFTforFT(tokenId: UInt64, swapCapability: Capability<&NonFungibleToken.Collection>):@FungibleToken.Vault{
       //ownerの確認
       pre {
         swapCapability.borrow()!.borrowNFT(id: tokenId) != nil:"No token matching this Id in collection!"
@@ -143,12 +144,16 @@ pub contract YomiSwap {
       let token <- swapCapability.borrow()!.withdraw(withdrawID: tokenId)
       let uuid = token.uuid
 
+      let amount:UFix64 = 0.01
+
       //NFTを受け取る
       self.poolNFTCapability.borrow()!.deposit(token: <- token)
 
       //FTを渡す
+      return  <-self.poolFTProviderCapability.borrow()!.withdraw(amount: amount)
 
       //eventの発行
+      //emit SwapNFTforFT(id: token.id, swapper: self.owner?.address)
     }
 
     pub fun cancelStakeNFT(tokenId: UInt64){
@@ -186,19 +191,37 @@ pub contract YomiSwap {
     }
 
 //set関数
-    pub fun setSpotPrice(){}
-
-    pub fun setDelta(){}
-
-    pub fun setDivergence(){}
-
-//internal関数
-    pub fun _calcBuyPrice(num:UInt64):UFix64{
-      return  UFix64(num) * self.spotPrice
+    pub fun setSpotPrice(_ spotPrice: UFix64){
+      self.spotPrice = spotPrice
     }
 
-    pub fun _calcSellPrice(num:UInt64):UFix64{
-      return  UFix64(num) * self.spotPrice
+    pub fun setDelta(_ delta: UFix64){
+      self.delta = delta
+    }
+
+    pub fun setDivergence(_ divergence: UFix64){
+      self.divergence = divergence
+    }
+
+//internal関数
+    pub fun _calcTotalBuyPrice(_num:UInt64):UFix64{
+      let totalFee = UFix64(_num) * self.spotPrice + (UFix64(_num) * (UFix64(_num) - UFix64(1)) * self.delta) / UFix64(2)
+      return  totalFee
+    }
+
+    pub fun _calcUpdateBuyPrice(_num:UInt64):UFix64{
+      let newBuyPrice = self.spotPrice + UFix64(_num) * self.delta
+      return  newBuyPrice
+    }
+
+    pub fun _calcTotalSellPrice(_num:UInt64):UFix64{
+      let totalFee = UFix64(_num) * (self.spotPrice - self.delta * UFix64(2)) - (UFix64(_num) * (UFix64(_num) - UFix64(1)) * self.delta) / UFix64(2)
+      return  totalFee
+    }
+
+    pub fun _calcUpdateSellPrice(_num:UInt64):UFix64{
+      let newBuyPrice = self.spotPrice - UFix64(_num) * self.delta
+      return  newBuyPrice
     }
   }
 }
